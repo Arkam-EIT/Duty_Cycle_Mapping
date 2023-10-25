@@ -1,3 +1,6 @@
+//Connected with OLED
+//SD Card, Vibration Sensor, Pressure Sensor result based in 10k Resistor (Voltage Divider)
+
 #include <Wire.h>
 #include "RTClib.h"
 
@@ -396,4 +399,31 @@ void vibrationDetector() {
         Serial.print("Engine OFF");
     EngineState = "OFF";
   }
+    display.clearDisplay();
+  // Set the cursor position and print multiple lines
+  display.setCursor(0, 0);
+  display.println("ZF Duty Cycle Tester");
+  display.setCursor(0, 10);
+  display.println(date_live);
+  display.setCursor(65, 10);
+  display.println(time_live);
+  display.setCursor(0, 20);
+  display.println("BAR: ");
+  display.setCursor(50, 20);
+  display.println(pressure,3);
+  display.setCursor(0, 30);
+  display.println("V: ");
+  display.setCursor(50, 30);
+  display.println(voltage,4);
+  display.setCursor(0, 40);
+  display.println("Engine State: ");
+  display.setCursor(90, 40);
+  display.println(sensorValue);
+  // display.setCursor(0, 40);
+  // display.println("ZF_Log: ");
+  // display.setCursor(50, 40);
+  // display.println(i);
+  // Display the information on the OLED
+  display.display();
+  //delay(1000);
 }
