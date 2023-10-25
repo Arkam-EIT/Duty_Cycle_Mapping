@@ -1,0 +1,399 @@
+#include <Wire.h>
+#include "RTClib.h"
+
+#include "FS.h"
+#include "SD.h"
+#include <SPI.h>
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
+
+#include <LiquidCrystal_I2C.h>
+
+#define RESTART_INTERVAL 2400000  // 40 minutes in milliseconds
+unsigned long lastRestartTime = 0;
+
+#define yellow 12
+#define red 13
+
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
+// Replace with your network credentials
+const char *ssid = "ZF_DutyCycle";
+const char *password = "zf@12345";
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Define CS pin for the SD card module
+#define SD_CS 5
+
+RTC_DS3231 rtc;
+// String dateTime;
+String date_live;
+String time_live;
+
+const int vibrationPin = 2;  // Pin connected to the vibration sensor
+int threshold = 100;          // Adjust this threshold based on your sensor's sensitivity
+unsigned long lastVibrationTime = 0;
+unsigned long noVibrationTimeout = 10000;  // 10 seconds in milliseconds
+String EngineState;
+
+File file;
+int fileNum = 1;
+int num = 0;
+
+// Define the analog input pin
+const int pressureSensorPin = 34;  // Change this to the appropriate pin
+
+float voltage;
+
+// Calibration parameters (change these based on your sensor's calibration)
+const float voltageAt0Bar = 0.11;  // Voltage reading at 0 bar
+const float voltageAt12Bar = 2.885;  // Voltage reading at 12 bar
+const float pressureAt0Bar = 0.11;    // Pressure at 0 bar
+const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
+
+// const float voltageAt0Bar = 0.230;  // Voltage reading at 0 bar
+// const float voltageAt12Bar = 2.885;  // Voltage reading at 12 bar
+// const float pressureAt0Bar = 0.08;    // Pressure at 0 bar
+// const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
+
+// const float voltageAt0Bar = 0.170;   // Voltage reading at 0 bar
+// const float voltageAt12Bar = 2.300;  // Voltage reading at 12 bar
+// const float pressureAt0Bar = 0.0;    // Pressure at 0 bar
+// const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
+
+float pressure;
+float pressure_psi;
+
+String dataMessage;
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ZF Duty Cycle Logger</title>
+  <title>ESP32 Reset</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: center;}
+    h2 {font-size: 3.0rem;}
+    p {font-size: 3.0rem;}
+    body {max-width: 600px; margin:0px auto; padding-bottom: 25px;}
+    .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+    .switch input {display: none}
+    .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 6px}
+    .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 3px}
+    input:checked+.slider {background-color: #b30000}
+    input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
+  </style>
+</head>
+<body>
+  <h2>ZF Duty Cycle Logger</h2>
+  %BUTTONPLACEHOLDER%
+<script>function toggleCheckbox(element) {
+  var xhr = new XMLHttpRequest();
+  if(element.checked){ xhr.open("GET", "/update?output="+element.id+"&state=1", true); }
+  else { xhr.open("GET", "/update?output="+element.id+"&state=0", true); }
+  xhr.send();
+}
+function redirectToDataSheet() {
+      window.location.href = "/redirect";
+    }
+    <h3>ESP32 Reset</h3>
+    <form method="post" action="/reset">
+    <button type="submit">Reset ESP32</button>
+    </form>
+
+</script>
+</body>
+</html>
+)rawliteral";
+
+void initWiFi() {
+  // WiFi.mode(WIFI_STA);
+  WiFi.softAP(ssid, password);
+
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  if (!MDNS.begin("zfdutycycle")) {
+    Serial.println("Error starting mDNS");
+    return;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(vibrationPin, INPUT);
+  delay(1000);  // Give some time to open the Serial Monitor
+
+  // Set the ADC range to 12 bits (0-4095)
+  analogReadResolution(12);
+
+  initWiFi();
+  initLCD();
+
+  pinMode(yellow, OUTPUT);
+  pinMode(red, OUTPUT);
+
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(500);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+  delay(500);
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(500);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+  delay(500);
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(1000);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+
+  Wire.begin();
+  rtc.begin();
+
+  // Route for handling the reset button click
+  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
+    // Perform a software reset of the ESP32
+    ESP.restart();
+  });
+
+  // Start the server
+  server.begin();
+
+    // Start the server
+    server.begin();
+
+  // Uncomment the following line to set the RTC to the date and time this sketch was compiled
+  if(rtc.lostPower() ){
+  rtc.adjust(DateTime(__DATE__, __TIME__)); 
+  }
+
+  // Initialize SD card
+  SD.begin(SD_CS);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
+    Serial.println("No SD card attached");
+    return;
+  }
+  Serial.println("Initializing SD card...");
+  if (!SD.begin(SD_CS)) {
+    Serial.println("ERROR - SD card initialization failed!");
+    return;  // init failed
+  }
+
+  checkFile();
+
+  file.close();
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  for (int i = 1; i <= fileNum; i++) {
+    String url = "/zf-log-" + String(i);
+    String filename = "/ZF_Log (" + String(i) + ").csv";
+
+    server.on(url.c_str(), HTTP_GET, [filename](AsyncWebServerRequest *request) {
+      request->send(SD, filename.c_str());
+    });
+  }
+
+  server.serveStatic("/", SD, "/");
+  server.begin();
+}
+
+
+void loop() {
+  DateTime now = rtc.now();
+  pressureSensorData();
+  printDate();
+  printTime();
+  logSDCard();
+  logLCD();
+
+Serial.println();
+  Serial.print(now.year(), DEC);
+  Serial.print('/');
+  Serial.print(now.month(), DEC);
+  Serial.print('/');
+  Serial.print(now.day(), DEC);
+  Serial.print(' ');
+  Serial.print(now.hour(), DEC);
+  Serial.print(':');
+  Serial.print(now.minute(), DEC);
+  Serial.print(':');
+  Serial.print(now.second(), DEC);
+  Serial.println();
+  delay(500);
+
+  // Check if it's time to restart
+  if (millis() - lastRestartTime >= RESTART_INTERVAL) {
+    Serial.println("Restarting ESP32...");
+    delay(1000);    // Optional delay for printing the message
+    ESP.restart();  // Restart the ESP32
+  }
+}
+
+void pressureSensorData() {
+  // Read the raw analog value from the pressure sensor
+  int rawValue = analogRead(pressureSensorPin);
+
+  // Map the raw analog value to a voltage between 0V to 3.3V
+  voltage = map(rawValue, 0, 4095, 0, 3300) / 1000.0;
+
+  // Map the voltage to a pressure value using calibration equation (linear interpolation)
+  pressure = mapFloat(voltage, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  pressure_psi = pressure * 14.5038;
+  // Print the raw analog value and the corresponding pressure
+  // Serial.print("Raw Analog Value: ");
+  // Serial.print(rawValue);
+  Serial.print("Voltage (V): ");
+  Serial.print(voltage, 4);
+  Serial.print(", Pressure (bar): ");
+  Serial.println(pressure, 3);
+
+  // delay(1000);  // Adjust the delay as per your requirements
+}
+
+// Function for linear interpolation between two ranges
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+#define countof(a) (sizeof(a) / sizeof(a[0]))
+
+String getDateString() {
+  DateTime now = rtc.now();
+  String dateString = String(now.year(), DEC) + '/' + String(now.month(), DEC) + '/' + String(now.day(), DEC);
+  return dateString;
+}
+
+void printDate() {
+  date_live = getDateString();
+  // Serial.println(date_live);
+}
+
+String getTimeString() {
+  DateTime now = rtc.now();
+  String timeString = String(now.hour(), DEC) + ':' + String(now.minute(), DEC) + ':' + String(now.second(), DEC);
+  return timeString;
+}
+
+void printTime() {
+  time_live = getTimeString();
+  // Serial.print(time_live);
+}
+
+
+void checkFile() {
+  file = SD.open("/ZF_Log (" + String(fileNum) + ").csv");
+
+  if (!file) {
+    Serial.println("File doens't exist");
+    Serial.println("Creating file...");
+    writeFile(SD, ("/ZF_Log (" + String(fileNum) + ").csv").c_str(), "S NO, DATE, TIME, BAR, ENGINE STS, VOLTAGE \r\n");
+  } else {
+    file.close();
+    fileNum++;
+    checkFile();
+  }
+}
+
+// Write the sensor readings on the SD card
+void logSDCard() {
+  vibrationDetector();
+  dataMessage += String(num) + "," + date_live + "," + time_live + "," + String(pressure) + "," + EngineState + "," + String(voltage) + "\r\n";
+  // Serial.println();
+  // Serial.print("Executing logSDCard() -> OK");
+  // Serial.println(dataMessage);
+  writeFile(SD, ("/ZF_Log (" + String(fileNum) + ").csv").c_str(), dataMessage.c_str());
+  num++;
+}
+// Write to the SD card (DON'T MODIFY THIS FUNCTION)
+void writeFile(fs::FS &fs, const char *path, const char *message) {
+  Serial.println();
+  Serial.printf("Writing file: %s\n", path);
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    digitalWrite(red, LOW);
+    digitalWrite(yellow, HIGH);
+    delay(10000);
+    ESP.restart();
+    return;
+  }
+  if (file.print(message)) {
+   // Serial.println("File written");
+    digitalWrite(yellow, LOW);
+    digitalWrite(red, HIGH);
+  } else {
+    Serial.println("Write failed");
+    delay(10000);
+    ESP.restart();
+  }
+  file.close();
+}
+
+void initLCD() {
+  //lcd.begin();
+  lcd.backlight();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print("SENSOR DATA LOGS");
+  lcd.print("      QAD      ");
+}
+
+void logLCD() {
+  lcd.setCursor(0, 0);
+  lcd.print(date_live);
+  lcd.setCursor(7, 0);
+  lcd.print(time_live);
+
+  lcd.setCursor(0, 1);
+  lcd.print("BAR ");
+  lcd.setCursor(4, 1);
+  lcd.print(pressure);
+  // lcd.setCursor(8, 1);
+  // lcd.print("PSI ");
+  // lcd.setCursor(12, 1);
+  // lcd.print(pressureValue);
+}
+
+// Replaces placeholder with button section in your web page
+String processor(const String &var) {
+  //Serial.println(var);
+  if (var == "BUTTONPLACEHOLDER") {
+    String buttons = "";
+    for (int i = 1; i <= fileNum; i++) {
+      buttons += "<a href=\"http://192.168.4.1/zf-log-" + String(i) + "\"><button>ZF Log " + String(i) + "</button></a>";
+    }
+    return buttons;
+  }
+  return String();
+}
+
+void vibrationDetector() {
+  int sensorValue = digitalRead(vibrationPin);
+  if (sensorValue == 1) {
+        Serial.print("Engine ON");
+    EngineState = "ON";
+  } else {
+        Serial.print("Engine OFF");
+    EngineState = "OFF";
+  }
+}
