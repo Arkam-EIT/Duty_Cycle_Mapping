@@ -1,28 +1,27 @@
-//Connected with OLED
-//SD Card, Vibration Sensor, Pressure Sensor result based in 10k Resistor (Voltage Divider)
-
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_GFX.h>
 #include <Wire.h>
 #include "RTClib.h"
-
 #include "FS.h"
 #include "SD.h"
 #include <SPI.h>
-
 #include <Arduino.h>
 #include <WiFi.h>
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 
-#include <LiquidCrystal_I2C.h>
-
 #define RESTART_INTERVAL 2400000  // 40 minutes in milliseconds
 unsigned long lastRestartTime = 0;
 
 #define yellow 12
 #define red 13
+#define PCF8591T_ADDRESS 0x48  // Address of PCF8591T A/D converter
+#define OLED_I2C_ADDRESS 0x3C
+#define SCREEN_WIDTH 128  // Change this to match your OLED display's width
+#define SCREEN_HEIGHT 64
 
-LiquidCrystal_I2C lcd(0x27, 16, 2);
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
 // Replace with your network credentials
 const char *ssid = "ZF_DutyCycle";
@@ -40,7 +39,7 @@ String date_live;
 String time_live;
 
 const int vibrationPin = 2;  // Pin connected to the vibration sensor
-int threshold = 100;          // Adjust this threshold based on your sensor's sensitivity
+int threshold = 100;         // Adjust this threshold based on your sensor's sensitivity
 unsigned long lastVibrationTime = 0;
 unsigned long noVibrationTimeout = 10000;  // 10 seconds in milliseconds
 String EngineState;
@@ -55,20 +54,10 @@ const int pressureSensorPin = 34;  // Change this to the appropriate pin
 float voltage;
 
 // Calibration parameters (change these based on your sensor's calibration)
-const float voltageAt0Bar = 0.11;  // Voltage reading at 0 bar
+const float voltageAt0Bar = 0.11;    // Voltage reading at 0 bar
 const float voltageAt12Bar = 2.885;  // Voltage reading at 12 bar
-const float pressureAt0Bar = 0.11;    // Pressure at 0 bar
+const float pressureAt0Bar = 0.11;   // Pressure at 0 bar
 const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
-
-// const float voltageAt0Bar = 0.230;  // Voltage reading at 0 bar
-// const float voltageAt12Bar = 2.885;  // Voltage reading at 12 bar
-// const float pressureAt0Bar = 0.08;    // Pressure at 0 bar
-// const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
-
-// const float voltageAt0Bar = 0.170;   // Voltage reading at 0 bar
-// const float voltageAt12Bar = 2.300;  // Voltage reading at 12 bar
-// const float pressureAt0Bar = 0.0;    // Pressure at 0 bar
-// const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
 
 float pressure;
 float pressure_psi;
@@ -130,6 +119,8 @@ void initWiFi() {
   }
 }
 
+void OledDisp();
+
 void setup() {
   Serial.begin(115200);
   pinMode(vibrationPin, INPUT);
@@ -139,7 +130,17 @@ void setup() {
   analogReadResolution(12);
 
   initWiFi();
-  initLCD();
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) {  // Change the I2C address to 0x3C
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;)
+      ;
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
 
   pinMode(yellow, OUTPUT);
   pinMode(red, OUTPUT);
@@ -166,7 +167,7 @@ void setup() {
   rtc.begin();
 
   // Route for handling the reset button click
-  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
     // Perform a software reset of the ESP32
     ESP.restart();
   });
@@ -174,12 +175,12 @@ void setup() {
   // Start the server
   server.begin();
 
-    // Start the server
-    server.begin();
+  // Start the server
+  server.begin();
 
   // Uncomment the following line to set the RTC to the date and time this sketch was compiled
-  if(rtc.lostPower() ){
-  rtc.adjust(DateTime(__DATE__, __TIME__)); 
+  if (rtc.lostPower()) {
+    rtc.adjust(DateTime(__DATE__, __TIME__));
   }
 
   // Initialize SD card
@@ -227,9 +228,9 @@ void loop() {
   printDate();
   printTime();
   logSDCard();
-  logLCD();
+  OledDisp();
 
-Serial.println();
+  Serial.println();
   Serial.print(now.year(), DEC);
   Serial.print('/');
   Serial.print(now.month(), DEC);
@@ -331,6 +332,13 @@ void logSDCard() {
 void writeFile(fs::FS &fs, const char *path, const char *message) {
   Serial.println();
   Serial.printf("Writing file: %s\n", path);
+
+  display.setCursor(0, 50);
+  display.println("ZF_Log: ");
+  display.setCursor(50, 50);
+  display.println(path);
+  display.display();
+
   File file = fs.open(path, FILE_WRITE);
   if (!file) {
     Serial.println("Failed to open file for writing");
@@ -341,7 +349,7 @@ void writeFile(fs::FS &fs, const char *path, const char *message) {
     return;
   }
   if (file.print(message)) {
-   // Serial.println("File written");
+    // Serial.println("File written");
     digitalWrite(yellow, LOW);
     digitalWrite(red, HIGH);
   } else {
@@ -352,30 +360,6 @@ void writeFile(fs::FS &fs, const char *path, const char *message) {
   file.close();
 }
 
-void initLCD() {
-  //lcd.begin();
-  lcd.backlight();
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print("SENSOR DATA LOGS");
-  lcd.print("      QAD      ");
-}
-
-void logLCD() {
-  lcd.setCursor(0, 0);
-  lcd.print(date_live);
-  lcd.setCursor(7, 0);
-  lcd.print(time_live);
-
-  lcd.setCursor(0, 1);
-  lcd.print("BAR ");
-  lcd.setCursor(4, 1);
-  lcd.print(pressure);
-  // lcd.setCursor(8, 1);
-  // lcd.print("PSI ");
-  // lcd.setCursor(12, 1);
-  // lcd.print(pressureValue);
-}
 
 // Replaces placeholder with button section in your web page
 String processor(const String &var) {
@@ -393,37 +377,40 @@ String processor(const String &var) {
 void vibrationDetector() {
   int sensorValue = digitalRead(vibrationPin);
   if (sensorValue == 1) {
-        Serial.print("Engine ON");
+    Serial.print("Engine ON");
     EngineState = "ON";
   } else {
-        Serial.print("Engine OFF");
+    Serial.print("Engine OFF");
     EngineState = "OFF";
   }
-    display.clearDisplay();
-  // Set the cursor position and print multiple lines
-  display.setCursor(0, 0);
-  display.println("ZF Duty Cycle Tester");
-  display.setCursor(0, 10);
-  display.println(date_live);
-  display.setCursor(65, 10);
-  display.println(time_live);
-  display.setCursor(0, 20);
-  display.println("BAR: ");
-  display.setCursor(50, 20);
-  display.println(pressure,3);
-  display.setCursor(0, 30);
-  display.println("V: ");
-  display.setCursor(50, 30);
-  display.println(voltage,4);
-  display.setCursor(0, 40);
-  display.println("Engine State: ");
-  display.setCursor(90, 40);
-  display.println(sensorValue);
-  // display.setCursor(0, 40);
-  // display.println("ZF_Log: ");
-  // display.setCursor(50, 40);
-  // display.println(i);
-  // Display the information on the OLED
-  display.display();
-  //delay(1000);
 }
+
+  void OledDisp() {
+    // Display the information on the OLED
+    // Set the cursor position and print multiple lines
+    display.clearDisplay();
+    display.setCursor(0, 0);
+    display.println("ZF Duty Cycle Tester");
+    display.setCursor(0, 10);
+    display.println(date_live);
+    display.setCursor(65, 10);
+    display.println(time_live);
+    display.setCursor(0, 20);
+    display.println("BAR: ");
+    display.setCursor(50, 20);
+    display.println(pressure, 3);
+    display.setCursor(0, 30);
+    display.println("V: ");
+    display.setCursor(50, 30);
+    display.println(voltage, 4);
+    display.setCursor(0, 40);
+    display.println("Engine State: ");
+    display.setCursor(90, 40);
+    display.println(EngineState);
+    // ZF Log details mentioned in "void writeFile" section
+    // display.setCursor(0, 50);
+    // display.println("ZF_Log: ");
+    // display.setCursor(50, 50);
+    // display.println(path);
+    // display.display();
+  }
