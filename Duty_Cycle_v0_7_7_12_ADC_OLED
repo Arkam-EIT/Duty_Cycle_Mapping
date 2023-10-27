@@ -57,10 +57,10 @@ int channel;
 int analogValue;
 
 // Calibration parameters (change these based on your sensor's calibration)
-const float voltageAt0Bar = 0.00;    // Voltage reading at 0 bar
-const float voltageAt12Bar = 4.855;  // Voltage reading at 12 bar
+const float voltageAt0Bar = 0.568;    // Voltage reading at 0 bar
+const float voltageAt8Bar = 3.137;  // Voltage reading at 8 bar - The name is not changed
 const float pressureAt0Bar = 0.00;   // Pressure at 0 bar
-const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
+const float pressureAt8Bar = 8.0;  // Pressure at 8 bar
 
 float pressure_0;
 float pressure_1;
@@ -273,10 +273,10 @@ void loop() {
 void pressureSensorData() {
 
   // Map the voltage to a pressure value using calibration equation (linear interpolation)
-  pressure_0 = mapFloat(voltage0, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
-  pressure_1 = mapFloat(voltage1, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
-  pressure_2 = mapFloat(voltage2, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
-  pressure_3 = mapFloat(voltage3, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  pressure_0 = mapFloat(voltage0, voltageAt0Bar, voltageAt8Bar, pressureAt0Bar, pressureAt8Bar);
+  pressure_1 = mapFloat(voltage1, voltageAt0Bar, voltageAt8Bar, pressureAt0Bar, pressureAt8Bar);
+  pressure_2 = mapFloat(voltage2, voltageAt0Bar, voltageAt8Bar, pressureAt0Bar, pressureAt8Bar);
+  pressure_3 = mapFloat(voltage3, voltageAt0Bar, voltageAt8Bar, pressureAt0Bar, pressureAt8Bar);
   // Print the raw analog value and the corresponding pressure
   Serial.print("Analog_0: ");
   Serial.print(analogValue);
