@@ -1,0 +1,482 @@
+#include <Adafruit_SSD1306.h>
+#include <Adafruit_GFX.h>
+#include <Wire.h>
+#include "RTClib.h"
+#include "FS.h"
+#include "SD.h"
+#include <SPI.h>
+#include <Arduino.h>
+#include <WiFi.h>
+#include <AsyncTCP.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
+
+#define PCF8591_ADDRESS 0x48      // Address of PCF8591 A/D converter
+#define PCF8591T_ADDRESS 0x48     // Address of PCF8591T A/D converter
+#define RESTART_INTERVAL 2400000  // 40 minutes in milliseconds
+unsigned long lastRestartTime = 0;
+
+#define yellow 12
+#define red 13
+#define OLED_I2C_ADDRESS 0x3C
+#define SCREEN_WIDTH 128  // Change this to match your OLED display's width
+#define SCREEN_HEIGHT 64
+#define AIN_CHANNEL 0  // Analog input channel 0
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// Replace with your network credentials
+const char *ssid = "ZF_DutyCycle";
+const char *password = "zf@12345";
+
+// Create AsyncWebServer object on port 80
+AsyncWebServer server(80);
+
+// Define CS pin for the SD card module
+#define SD_CS 5
+
+RTC_DS3231 rtc;
+// String dateTime;
+String date_live;
+String time_live;
+
+const int vibrationPin = 2;  // Pin connected to the vibration sensor
+int threshold = 100;         // Adjust this threshold based on your sensor's sensitivity
+unsigned long lastVibrationTime = 0;
+unsigned long noVibrationTimeout = 10000;  // 10 seconds in milliseconds
+String EngineState;
+
+File file;
+int fileNum = 1;
+int num = 0;
+
+// Define the analog input pin
+const int pressureSensorPin = 34;  // Change this to the appropriate pin
+
+int channel;
+int analogValue;
+
+// Calibration parameters (change these based on your sensor's calibration)
+const float voltageAt0Bar = 0.00;    // Voltage reading at 0 bar
+const float voltageAt12Bar = 4.855;  // Voltage reading at 12 bar
+const float pressureAt0Bar = 0.00;   // Pressure at 0 bar
+const float pressureAt12Bar = 12.0;  // Pressure at 12 bar
+
+float pressure_0;
+float pressure_1;
+float pressure_2;
+float pressure_3;
+float pressure_psi;
+float voltage0;
+float voltage1;
+float voltage2;
+float voltage3;
+
+String dataMessage;
+
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE HTML><html>
+<head>
+  <title>ZF Duty Cycle Logger</title>
+  <title>ESP32 Reset</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <style>
+    html {font-family: Arial; display: inline-block; text-align: center;}
+    h2 {font-size: 3.0rem;}
+    p {font-size: 3.0rem;}
+    body {max-width: 600px; margin:0px auto; padding-bottom: 25px;}
+    .switch {position: relative; display: inline-block; width: 120px; height: 68px} 
+    .switch input {display: none}
+    .slider {position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: #ccc; border-radius: 6px}
+    .slider:before {position: absolute; content: ""; height: 52px; width: 52px; left: 8px; bottom: 8px; background-color: #fff; -webkit-transition: .4s; transition: .4s; border-radius: 3px}
+    input:checked+.slider {background-color: #b30000}
+    input:checked+.slider:before {-webkit-transform: translateX(52px); -ms-transform: translateX(52px); transform: translateX(52px)}
+  </style>
+</head>
+<body>
+  <h2>ZF Duty Cycle Logger</h2>
+  %BUTTONPLACEHOLDER%
+<script>function toggleCheckbox(element) {
+  var xhr = new XMLHttpRequest();
+  if(element.checked){ xhr.open("GET", "/update?output="+element.id+"&state=1", true); }
+  else { xhr.open("GET", "/update?output="+element.id+"&state=0", true); }
+  xhr.send();
+}
+function redirectToDataSheet() {
+      window.location.href = "/redirect";
+    }
+    <h3>ESP32 Reset</h3>
+    <form method="post" action="/reset">
+    <button type="submit">Reset ESP32</button>
+    </form>
+
+</script>
+</body>
+</html>
+)rawliteral";
+
+void initWiFi() {
+  // WiFi.mode(WIFI_STA);
+  WiFi.softAP(ssid, password);
+
+  IPAddress IP = WiFi.softAPIP();
+  Serial.print("AP IP address: ");
+  Serial.println(IP);
+  if (!MDNS.begin("zfdutycycle")) {
+    Serial.println("Error starting mDNS");
+    return;
+  }
+}
+
+void OledDisp();
+void pressureSensorData();
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(vibrationPin, INPUT);
+  delay(1000);  // Give some time to open the Serial Monitor
+
+  // Set the ADC range to 12 bits (0-4095)
+  analogReadResolution(12);
+
+  initWiFi();
+
+
+  // Initialize OLED display
+  if (!display.begin(SSD1306_SWITCHCAPVCC, OLED_I2C_ADDRESS)) {  // Change the I2C address to 0x3C
+    Serial.println(F("SSD1306 allocation failed"));
+    for (;;)
+      ;
+  }
+
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+
+  pinMode(yellow, OUTPUT);
+  pinMode(red, OUTPUT);
+
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(500);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+  delay(500);
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(500);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+  delay(500);
+  digitalWrite(yellow, LOW);
+  digitalWrite(red, LOW);
+  delay(1000);
+  digitalWrite(yellow, HIGH);
+  digitalWrite(red, HIGH);
+
+  Wire.begin();
+  rtc.begin();
+
+  // Route for handling the reset button click
+  server.on("/reset", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // Perform a software reset of the ESP32
+    ESP.restart();
+  });
+
+  // Start the server
+  server.begin();
+
+  // Start the server
+  server.begin();
+
+  // Uncomment the following line to set the RTC to the date and time this sketch was compiled
+  if (rtc.lostPower()) {
+    rtc.adjust(DateTime(__DATE__, __TIME__));
+  }
+
+  // Initialize SD card
+  SD.begin(SD_CS);
+  if (!SD.begin(SD_CS)) {
+    Serial.println("Card Mount Failed");
+    return;
+  }
+  uint8_t cardType = SD.cardType();
+  if (cardType == CARD_NONE) {
+    Serial.println("No SD card attached");
+    return;
+  }
+  Serial.println("Initializing SD card...");
+  if (!SD.begin(SD_CS)) {
+    Serial.println("ERROR - SD card initialization failed!");
+    return;  // init failed
+  }
+
+  checkFile();
+
+  file.close();
+
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request) {
+    request->send_P(200, "text/html", index_html, processor);
+  });
+
+  for (int i = 1; i <= fileNum; i++) {
+    String url = "/zf-log-" + String(i);
+    String filename = "/ZF_Log (" + String(i) + ").csv";
+
+    server.on(url.c_str(), HTTP_GET, [filename](AsyncWebServerRequest *request) {
+      request->send(SD, filename.c_str());
+    });
+  }
+
+  server.serveStatic("/", SD, "/");
+  server.begin();
+}
+
+
+void loop() {
+  DateTime now = rtc.now();
+  pressureSensorData();
+  printDate();
+  printTime();
+  logSDCard();
+  OledDisp();
+
+  Serial.println();
+  Serial.print(now.year(), DEC);
+  Serial.print('/');
+  Serial.print(now.month(), DEC);
+  Serial.print('/');
+  Serial.print(now.day(), DEC);
+  Serial.print(' ');
+  Serial.print(now.hour(), DEC);
+  Serial.print(':');
+  Serial.print(now.minute(), DEC);
+  Serial.print(':');
+  Serial.print(now.second(), DEC);
+  Serial.println();
+  delay(500);
+
+  voltage0 = readChannel(0);
+  voltage1 = readChannel(1);
+  voltage2 = readChannel(2);
+  voltage3 = readChannel(3);
+
+  // Check if it's time to restart
+  if (millis() - lastRestartTime >= RESTART_INTERVAL) {
+    Serial.println("Restarting ESP32...");
+    delay(1000);    // Optional delay for printing the message
+    ESP.restart();  // Restart the ESP32
+  }
+}
+
+void pressureSensorData() {
+
+  // Map the voltage to a pressure value using calibration equation (linear interpolation)
+  pressure_0 = mapFloat(voltage0, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  pressure_1 = mapFloat(voltage1, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  pressure_2 = mapFloat(voltage2, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  pressure_3 = mapFloat(voltage3, voltageAt0Bar, voltageAt12Bar, pressureAt0Bar, pressureAt12Bar);
+  // Print the raw analog value and the corresponding pressure
+  Serial.print("Analog_0: ");
+  Serial.print(analogValue);
+  Serial.print(", Voltage_0: ");
+  Serial.print(voltage0, 3);  // Print voltage with 2 decimal places
+  Serial.print(", Pressure_0: ");
+  Serial.print(pressure_0, 3);
+  Serial.println();
+
+  Serial.print("Analog_1: ");
+  Serial.print(analogValue);
+  Serial.print(", Voltage_1: ");
+  Serial.print(voltage1, 3);  // Print voltage with 2 decimal places
+  Serial.print(", Pressure_1: ");
+  Serial.print(pressure_1, 3);
+  Serial.println();
+
+  Serial.print("Analog_2: ");
+  Serial.print(analogValue);
+  Serial.print(", Voltage_2: ");
+  Serial.print(voltage2, 3);  // Print voltage with 2 decimal places
+  Serial.print(", Pressure_2: ");
+  Serial.print(pressure_2, 3);
+  Serial.println();
+
+  Serial.print("Analog_3: ");
+  Serial.print(analogValue);
+  Serial.print(", Voltage_3: ");
+  Serial.print(voltage3, 3);  // Print voltage with 2 decimal places
+  Serial.print(", Pressure_3: ");
+  Serial.print(pressure_3, 3);
+  Serial.println();
+}
+
+float readChannel(int channel) {
+  // Select the channel and start a conversion
+  Wire.beginTransmission(PCF8591_ADDRESS);
+  Wire.write(0x40 | channel);  // Control byte, 0x40 sets the auto-increment bit
+  Wire.endTransmission();
+
+  // Request and read analog value
+  Wire.requestFrom(PCF8591_ADDRESS, 2);  // Request 2 bytes (8-bit ADC value)
+  int analogValue = Wire.read();
+
+  // Convert raw value to voltage in volts
+  return (float)map(analogValue, 0, 255, 0, 5000) / 1000.0;  // Map to a 0-5V range and return the voltage
+}
+
+// Function for linear interpolation between two ranges
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+#define countof(a) (sizeof(a) / sizeof(a[0]))
+
+String getDateString() {
+  DateTime now = rtc.now();
+  String dateString = String(now.year(), DEC) + '/' + String(now.month(), DEC) + '/' + String(now.day(), DEC);
+  return dateString;
+}
+
+void printDate() {
+  date_live = getDateString();
+  // Serial.println(date_live);
+}
+
+String getTimeString() {
+  DateTime now = rtc.now();
+  String timeString = String(now.hour(), DEC) + ':' + String(now.minute(), DEC) + ':' + String(now.second(), DEC);
+  return timeString;
+}
+
+void printTime() {
+  time_live = getTimeString();
+  // Serial.print(time_live);
+}
+
+
+void checkFile() {
+  file = SD.open("/ZF_Log (" + String(fileNum) + ").csv");
+
+  if (!file) {
+    Serial.println("File doens't exist");
+    Serial.println("Creating file...");
+    writeFile(SD, ("/ZF_Log (" + String(fileNum) + ").csv").c_str(), "S NO, DATE, TIME, BAR_0, BAR_1, BAR_2, BAR_3, ENGINE STS, V_0, V_1, V_2, V_3 \r\n");
+    //writeFile(SD, ("/ZF_Log (" + String(fileNum) + ").csv").c_str() + "," + "S_NO" + "," + "DATE" + "," + "TIME" + "," + "BAR_0" + "," + "BAR_1" + "," + "BAR_2" + "," + "BAR_3" + "," + "ENGINE_STS" + "," + "V_0" + "," + "V_1" + "," + "V_2" + "," + "V_3" + "\r\n";
+
+  } else {
+    file.close();
+    fileNum++;
+    checkFile();
+  }
+}
+
+// Write the sensor readings on the SD card
+void logSDCard() {
+  vibrationDetector();
+  dataMessage += String(num) + "," + date_live + "," + time_live + "," + String(pressure_0) + "," + String(pressure_1) + "," + String(pressure_2) + "," + String(pressure_3) + "," + EngineState + "," + String(voltage0) + "," + String(voltage1) + "," + String(voltage2) + "," + String(voltage3) + "\r\n";
+  // Serial.println();
+  // Serial.print("Executing logSDCard() -> OK");
+  // Serial.println(dataMessage);
+  writeFile(SD, ("/ZF_Log (" + String(fileNum) + ").csv").c_str(), dataMessage.c_str());
+  num++;
+}
+// Write to the SD card (DON'T MODIFY THIS FUNCTION)
+void writeFile(fs::FS &fs, const char *path, const char *message) {
+  Serial.println();
+  Serial.printf("Writing file: %s\n", path);
+
+  display.setCursor(50, 55);
+  display.println(path);
+  display.display();
+
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("Failed to open file for writing");
+    digitalWrite(red, LOW);
+    digitalWrite(yellow, HIGH);
+    delay(10000);
+    ESP.restart();
+    return;
+  }
+  if (file.print(message)) {
+    // Serial.println("File written");
+    digitalWrite(yellow, LOW);
+    digitalWrite(red, HIGH);
+  } else {
+    Serial.println("Write failed");
+    delay(10000);
+    ESP.restart();
+  }
+  file.close();
+}
+
+
+// Replaces placeholder with button section in your web page
+String processor(const String &var) {
+  //Serial.println(var);
+  if (var == "BUTTONPLACEHOLDER") {
+    String buttons = "";
+    for (int i = 1; i <= fileNum; i++) {
+      buttons += "<a href=\"http://192.168.4.1/zf-log-" + String(i) + "\"><button>ZF Log " + String(i) + "</button></a>";
+    }
+    return buttons;
+  }
+  return String();
+}
+
+void vibrationDetector() {
+  int sensorValue = digitalRead(vibrationPin);
+  if (sensorValue == 1) {
+    Serial.print("Engine ON");
+    EngineState = "ON";
+  } else {
+    Serial.print("Engine OFF");
+    EngineState = "OFF";
+  }
+}
+
+void OledDisp() {
+  // Display the information on the OLED
+  // Set the cursor position and print multiple lines
+  display.clearDisplay();
+  display.setCursor(0, 0);
+  display.println("ZF Duty Cycle Tester");
+  display.setCursor(0, 10);
+  display.println(date_live);
+  display.setCursor(65, 10);
+  display.println(time_live);
+
+  display.setCursor(0, 20);
+  display.println("P0: ");
+  display.setCursor(20, 20);
+  display.println(pressure_0, 3);
+  display.setCursor(70, 20);
+  display.println("V0: ");
+  display.setCursor(90, 20);
+  display.println(voltage0, 3);
+
+  display.setCursor(0, 30);
+  display.println("P1: ");
+  display.setCursor(20, 30);
+  display.println(pressure_1, 3);
+  display.setCursor(70, 30);
+  display.println("V1: ");
+  display.setCursor(90, 30);
+  display.println(voltage1, 3);
+
+  display.setCursor(0, 40);
+  display.println("P2: ");
+  display.setCursor(20, 40);
+  display.println(pressure_2, 3);
+  display.setCursor(70, 40);
+  display.println("V2: ");
+  display.setCursor(90, 40);
+  display.println(voltage2, 3);
+
+  display.setCursor(0, 55);
+  display.println("Eg:");
+  display.setCursor(20, 55);
+  display.println(EngineState);
+ // display.display();
+}
