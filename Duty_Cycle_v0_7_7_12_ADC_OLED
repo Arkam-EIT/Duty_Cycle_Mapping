@@ -11,7 +11,7 @@
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 
-#define PCF8591_ADDRESS 0x48      // Address of PCF8591 A/D converter
+//#define PCF8591_ADDRESS 0x48      // Address of PCF8591 A/D converter
 #define PCF8591T_ADDRESS 0x48     // Address of PCF8591T A/D converter
 #define RESTART_INTERVAL 2400000  // 40 minutes in milliseconds
 unsigned long lastRestartTime = 0;
@@ -21,7 +21,6 @@ unsigned long lastRestartTime = 0;
 #define OLED_I2C_ADDRESS 0x3C
 #define SCREEN_WIDTH 128  // Change this to match your OLED display's width
 #define SCREEN_HEIGHT 64
-#define AIN_CHANNEL 0  // Analog input channel 0
 
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 
@@ -57,10 +56,10 @@ int channel;
 int analogValue;
 
 // Calibration parameters (change these based on your sensor's calibration)
-const float voltageAt0Bar = 0.568;    // Voltage reading at 0 bar
+const float voltageAt0Bar = 0.568;  // Voltage reading at 0 bar
 const float voltageAt8Bar = 3.137;  // Voltage reading at 8 bar - The name is not changed
-const float pressureAt0Bar = 0.00;   // Pressure at 0 bar
-const float pressureAt8Bar = 8.0;  // Pressure at 8 bar
+const float pressureAt0Bar = 0.00;  // Pressure at 0 bar
+const float pressureAt8Bar = 8.0;   // Pressure at 8 bar
 
 float pressure_0;
 float pressure_1;
@@ -199,6 +198,13 @@ void setup() {
   SD.begin(SD_CS);
   if (!SD.begin(SD_CS)) {
     Serial.println("Card Mount Failed");
+    display.clearDisplay();
+    display.setTextSize(2);
+    display.setCursor(0, 0);
+    display.println("Card Mount Failed");
+    display.setTextSize(1);
+    display.setCursor(0, 50);
+    display.println("Check the SD Card");
     return;
   }
   uint8_t cardType = SD.cardType();
@@ -257,10 +263,10 @@ void loop() {
   Serial.println();
   delay(500);
 
-  voltage0 = readChannel(0);
-  voltage1 = readChannel(1);
-  voltage2 = readChannel(2);
-  voltage3 = readChannel(3);
+  voltage0 = readChannel(1);
+  voltage1 = readChannel(2);
+  voltage2 = readChannel(3);
+  voltage3 = readChannel(0);
 
   // Check if it's time to restart
   if (millis() - lastRestartTime >= RESTART_INTERVAL) {
@@ -313,12 +319,12 @@ void pressureSensorData() {
 
 float readChannel(int channel) {
   // Select the channel and start a conversion
-  Wire.beginTransmission(PCF8591_ADDRESS);
+  Wire.beginTransmission(PCF8591T_ADDRESS);
   Wire.write(0x40 | channel);  // Control byte, 0x40 sets the auto-increment bit
   Wire.endTransmission();
 
   // Request and read analog value
-  Wire.requestFrom(PCF8591_ADDRESS, 2);  // Request 2 bytes (8-bit ADC value)
+  Wire.requestFrom(PCF8591T_ADDRESS, 2);  // Request 2 bytes (8-bit ADC value)
   int analogValue = Wire.read();
 
   // Convert raw value to voltage in volts
@@ -385,7 +391,7 @@ void logSDCard() {
 void writeFile(fs::FS &fs, const char *path, const char *message) {
   Serial.println();
   Serial.printf("Writing file: %s\n", path);
-
+  // Display content in the OLED
   display.setCursor(50, 55);
   display.println(path);
   display.display();
@@ -442,41 +448,50 @@ void OledDisp() {
   display.clearDisplay();
   display.setCursor(0, 0);
   display.println("ZF Duty Cycle Tester");
-  display.setCursor(0, 10);
+  display.setCursor(0, 9);
   display.println(date_live);
-  display.setCursor(65, 10);
+  display.setCursor(65, 9);
   display.println(time_live);
 
-  display.setCursor(0, 20);
+  display.setCursor(0, 18);
   display.println("P0: ");
-  display.setCursor(20, 20);
+  display.setCursor(20, 18);
   display.println(pressure_0, 3);
-  display.setCursor(70, 20);
+  display.setCursor(70, 18);
   display.println("V0: ");
-  display.setCursor(90, 20);
+  display.setCursor(90, 18);
   display.println(voltage0, 3);
 
-  display.setCursor(0, 30);
+  display.setCursor(0, 27);
   display.println("P1: ");
-  display.setCursor(20, 30);
+  display.setCursor(20, 27);
   display.println(pressure_1, 3);
-  display.setCursor(70, 30);
+  display.setCursor(70, 27);
   display.println("V1: ");
-  display.setCursor(90, 30);
+  display.setCursor(90, 27);
   display.println(voltage1, 3);
 
-  display.setCursor(0, 40);
+  display.setCursor(0, 36);
   display.println("P2: ");
-  display.setCursor(20, 40);
+  display.setCursor(20, 36);
   display.println(pressure_2, 3);
-  display.setCursor(70, 40);
+  display.setCursor(70, 36);
   display.println("V2: ");
-  display.setCursor(90, 40);
+  display.setCursor(90, 36);
   display.println(voltage2, 3);
+
+  display.setCursor(0, 45);
+  display.println("P3: ");
+  display.setCursor(20, 45);
+  display.println(pressure_3, 3);
+  display.setCursor(70, 45);
+  display.println("V3: ");
+  display.setCursor(90, 45);
+  display.println(voltage3, 3);
 
   display.setCursor(0, 55);
   display.println("Eg:");
   display.setCursor(20, 55);
   display.println(EngineState);
- // display.display();
+  // display.display();
 }
