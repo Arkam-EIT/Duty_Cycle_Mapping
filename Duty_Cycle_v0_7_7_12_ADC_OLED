@@ -66,10 +66,10 @@ float pressure_1;
 float pressure_2;
 float pressure_3;
 float pressure_psi;
-float voltage0;
-float voltage1;
-float voltage2;
-float voltage3;
+float voltage0 = 0.0;
+float voltage1 = 0.0;
+float voltage2 = 0.0;
+float voltage3 = 0.0;
 
 String dataMessage;
 
@@ -148,6 +148,9 @@ void setup() {
     for (;;)
       ;
   }
+
+  display.display();  // Clear the display
+  delay(2000);  // Display the logo for 2 seconds
 
   display.clearDisplay();
   display.setTextSize(1);
@@ -321,6 +324,10 @@ float readChannel(int channel) {
   // Select the channel and start a conversion
   Wire.beginTransmission(PCF8591T_ADDRESS);
   Wire.write(0x40 | channel);  // Control byte, 0x40 sets the auto-increment bit
+  Wire.write(0x00 | channel);            // Data for channel 0 (unused)
+  Wire.write(0x00 | channel);            // Data for channel 1 (unused)
+  Wire.write(0x00 | channel);            // Data for channel 2 (unused)
+  Wire.write(0x00 | channel);            // Data for channel 3 (unused)
   Wire.endTransmission();
 
   // Request and read analog value
